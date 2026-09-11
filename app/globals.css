@@ -1,0 +1,115 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Playfair+Display:wght@600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 0 0% 100%;
+    --foreground: 0 0% 6%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 6%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 6%;
+    --primary: 0 0% 8%;
+    --primary-foreground: 45 55% 65%;
+    --secondary: 45 30% 96%;
+    --secondary-foreground: 0 0% 8%;
+    --muted: 45 20% 96%;
+    --muted-foreground: 0 0% 40%;
+    --accent: 45 55% 55%;
+    --accent-foreground: 0 0% 8%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 45 20% 88%;
+    --input: 45 20% 90%;
+    --ring: 45 55% 55%;
+    --radius: 0.75rem;
+    --chart-1: 45 65% 52%;
+    --chart-2: 0 0% 15%;
+    --chart-3: 45 40% 70%;
+    --chart-4: 0 0% 45%;
+    --chart-5: 45 25% 82%;
+  }
+
+  .dark {
+    --background: 0 0% 6%;
+    --foreground: 45 30% 92%;
+    --card: 0 0% 9%;
+    --card-foreground: 45 30% 92%;
+    --popover: 0 0% 8%;
+    --popover-foreground: 45 30% 92%;
+    --primary: 45 55% 55%;
+    --primary-foreground: 0 0% 8%;
+    --secondary: 0 0% 14%;
+    --secondary-foreground: 45 30% 92%;
+    --muted: 0 0% 12%;
+    --muted-foreground: 45 10% 65%;
+    --accent: 45 55% 55%;
+    --accent-foreground: 0 0% 8%;
+    --destructive: 0 62% 45%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 0 0% 18%;
+    --input: 0 0% 16%;
+    --ring: 45 55% 55%;
+  }
+
+  * { @apply border-border; }
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'Inter', system-ui, sans-serif;
+    font-feature-settings: 'cv02','cv03','cv04','cv11';
+  }
+  .font-display { font-family: 'Playfair Display', serif; }
+}
+
+@layer components {
+  .glass-card {
+    @apply bg-card/70 backdrop-blur-xl border border-border/60 shadow-[0_1px_2px_rgba(0,0,0,0.04),0_8px_24px_-8px_rgba(0,0,0,0.08)];
+  }
+  .gold-gradient {
+    background: linear-gradient(135deg, #d4af37 0%, #f4d97a 50%, #b8860b 100%);
+  }
+  .gold-text {
+    background: linear-gradient(135deg, #b8860b 0%, #d4af37 50%, #f4d97a 100%);
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .dark-panel {
+    background: linear-gradient(180deg, #0f0f0f 0%, #1a1a1a 100%);
+  }
+  .shine-border {
+    position: relative;
+    background: linear-gradient(180deg, hsl(var(--card)) 0%, hsl(var(--card)) 100%);
+  }
+  .shine-border::before {
+    content: '';
+    position: absolute; inset: 0;
+    padding: 1px; border-radius: inherit;
+    background: linear-gradient(135deg, rgba(212,175,55,0.5), transparent 40%, transparent 60%, rgba(212,175,55,0.35));
+    -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+    -webkit-mask-composite: xor; mask-composite: exclude;
+    pointer-events: none;
+  }
+  .kpi-tile {
+    @apply relative overflow-hidden rounded-xl border border-border/60 bg-card p-5 transition-all hover:shadow-lg hover:-translate-y-0.5;
+  }
+  .kpi-tile::after {
+    content: '';
+    position: absolute; top: 0; right: 0; width: 120px; height: 120px;
+    background: radial-gradient(circle at top right, rgba(212,175,55,0.18), transparent 70%);
+    pointer-events: none;
+  }
+  .approval-pill {
+    @apply inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+}
+
+@layer utilities {
+  .scrollbar-thin::-webkit-scrollbar { width: 6px; height: 6px; }
+  .scrollbar-thin::-webkit-scrollbar-thumb { background: hsl(var(--border)); border-radius: 3px; }
+  .no-scrollbar::-webkit-scrollbar { display: none; }
+  .no-scrollbar { scrollbar-width: none; }
+}
