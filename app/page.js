@@ -9,7 +9,7 @@ import {
   FileText, FileSpreadsheet, Calendar, Mail, Lock, User as UserIcon,
   ShieldCheck, UserCog, KeyRound, UserX, UserCheck, Crown,
   Send, Clock, Inbox, Zap, Upload, Paperclip, Copy, ExternalLink,
-  GitCompare, Trophy
+  GitCompare, Trophy, Folder
 } from 'lucide-react'
 import {
   ResponsiveContainer, AreaChart, Area, XAxis, YAxis, Tooltip, CartesianGrid,
@@ -35,6 +35,7 @@ const ROLES = [
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'transactions', label: 'Transactions', icon: Wallet },
+  { id: 'documents', label: 'Documents', icon: Folder },
   { id: 'approvals', label: 'Approvals', icon: FileCheck2 },
   { id: 'quotations', label: 'Quotations', icon: ClipboardList },
   { id: 'budgets', label: 'Budgets', icon: PiggyBank },
@@ -518,6 +519,333 @@ const Dashboard = ({ user, refresh }) => {
   )
 }
 
+const UploadStatementModal = ({ user, onUploaded }) => {
+  const [open, setOpen] = useState(false)
+  const [file, setFile] = useState(null)
+  const [uploading, setUploading] = useState(false)
+
+  const handleFileChange = (e) => {
+    const selected = e.target.files?.[0]
+    if (selected) {
+      if (selected.type !== 'application/pdf' && !selected.name.endsWith('.pdf')) {
+        toast.error('Please select a valid PDF file.')
+        return
+      }
+      setFile(selected)
+    }
+  }
+
+  const upload = async () => {
+    if (!file) return toast.error('Please select a PDF bank statement file')
+    setUploading(true)
+    try {
+      const reader = new FileReader()
+      reader.onload = async () => {
+        try {
+          const base64Str = reader.result
+          const res = await api('/bank-statements/upload', {
+            method: 'POST',
+            body: JSON.stringify({
+              fileName: file.name,
+              fileData: base64Str,
+            })
+          }, user)
+          toast.success('Bank statement uploaded successfully!')
+          setOpen(false)
+          setFile(null)
+          onUploaded()
+        } catch (err) {
+          toast.error(err.message || 'Failed to upload bank statement PDF')
+        } finally {
+          setUploading(false)
+        }
+      }
+      reader.onerror = () => {
+        toast.error('Failed to read file')
+        setUploading(false)
+      }
+      reader.readAsDataURL(file)
+    } catch (e) {
+      toast.error(e.message)
+      setUploading(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button variant="outline" className="border-amber-400/40 text-amber-900 dark:text-amber-300 hover:bg-amber-400/10 font-semibold">
+          <Upload className="h-4 w-4 mr-1.5" /> Upload Transaction Details
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="font-display flex items-center gap-2">
+            <Landmark className="h-5 w-5 text-amber-500" /> Upload Transaction Details
+          </DialogTitle>
+          <DialogDescription>
+            Upload PDF transaction details or bank statements to securely store and view/download them anytime.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-4 py-2">
+          <div className="border-2 border-dashed border-border rounded-xl p-6 text-center hover:border-amber-400/60 transition-colors bg-muted/30">
+            <input
+              type="file"
+              accept=".pdf,application/pdf"
+              onChange={handleFileChange}
+              className="hidden"
+              id="pdf-statement-input"
+            />
+            <label htmlFor="pdf-statement-input" className="cursor-pointer space-y-2 block">
+              <div className="h-12 w-12 rounded-full bg-amber-500/10 text-amber-600 grid place-items-center mx-auto">
+                <Paperclip className="h-6 w-6" />
+              </div>
+              <div className="text-sm font-medium">
+                {file ? <span className="text-foreground font-semibold">{file.name}</span> : 'Click to select PDF document'}
+              </div>
+              <div className="text-xs text-muted-foreground">
+                {file ? `${(file.size / 1024).toFixed(1)} KB` : 'PDF transaction details or bank statement'}
+              </div>
+            </label>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+          <Button onClick={upload} disabled={!file || uploading} className="gold-gradient text-neutral-900 font-semibold">
+            {uploading ? 'Uploading…' : 'Upload Transaction Details'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+const BankStatementsListModal = ({ user }) => {
+  const [open, setOpen] = useState(false)
+  const [statements, setStatements] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [downloadingId, setDownloadingId] = useState(null)
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const data = await api('/bank-statements', {}, user)
+      setStatements(data)
+    } catch (e) {
+      toast.error(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  const downloadPdf = async (id, fileName) => {
+    setDownloadingId(id)
+    try {
+      const doc = await api(`/bank-statements/${id}`, {}, user)
+      if (!doc.base64Data) throw new Error('PDF file content unavailable')
+
+      const link = document.createElement('a')
+      link.href = doc.base64Data.startsWith('data:') ? doc.base64Data : `data:application/pdf;base64,${doc.base64Data}`
+      link.download = fileName || 'document.pdf'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      toast.success('Downloaded original PDF')
+    } catch (e) {
+      toast.error(e.message || 'Download failed')
+    } finally {
+      setDownloadingId(null)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={(v) => { setOpen(v); if (v) load() }}>
+      <DialogTrigger asChild>
+        <Button variant="ghost" size="sm" className="text-xs text-muted-foreground hover:text-foreground">
+          <FileText className="h-3.5 w-3.5 mr-1" /> View Uploaded PDFs
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle className="font-display flex items-center gap-2">
+            <Folder className="h-5 w-5 text-amber-500" /> Uploaded Documents
+          </DialogTitle>
+          <DialogDescription>
+            View and download PDF transaction details and bank statements uploaded to PartnerSync.
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="space-y-3 max-h-96 overflow-y-auto pr-1">
+          {loading && <p className="text-xs text-muted-foreground py-4 text-center">Loading documents…</p>}
+          {!loading && statements.length === 0 && (
+            <p className="text-xs text-muted-foreground py-6 text-center">No transaction documents uploaded yet.</p>
+          )}
+          {statements.map(st => (
+            <div key={st.id} className="p-3.5 rounded-xl border border-border/60 bg-muted/30 flex items-center justify-between">
+              <div className="min-w-0 flex-1">
+                <div className="font-medium text-sm truncate flex items-center gap-2">
+                  <FileText className="h-4 w-4 text-amber-500 shrink-0" />
+                  <span className="truncate">{st.fileName}</span>
+                </div>
+                <div className="text-xs text-muted-foreground mt-1">
+                  Uploaded by {st.uploadedByName} · {timeAgo(st.uploadedAt)} · {(st.fileSize / 1024).toFixed(1)} KB
+                </div>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                className="ml-3 shrink-0"
+                disabled={downloadingId === st.id}
+                onClick={() => downloadPdf(st.id, st.fileName)}
+              >
+                <Download className="h-3.5 w-3.5 mr-1" />
+                {downloadingId === st.id ? 'Downloading…' : 'Download PDF'}
+              </Button>
+            </div>
+          ))}
+        </div>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+const DocumentsView = ({ user, refresh, triggerRefresh }) => {
+  const [statements, setStatements] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [search, setSearch] = useState('')
+  const [downloadingId, setDownloadingId] = useState(null)
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const data = await api('/bank-statements', {}, user)
+      setStatements(data)
+    } catch (e) {
+      toast.error(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  useEffect(() => { load() }, [user, refresh])
+
+  const downloadPdf = async (id, fileName) => {
+    setDownloadingId(id)
+    try {
+      const doc = await api(`/bank-statements/${id}`, {}, user)
+      if (!doc || !doc.base64Data) throw new Error('File data unavailable')
+      const link = document.createElement('a')
+      link.href = doc.base64Data.startsWith('data:') ? doc.base64Data : `data:application/pdf;base64,${doc.base64Data}`
+      link.download = fileName || 'document.pdf'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      toast.success('Downloaded PDF document')
+    } catch (e) {
+      toast.error(e.message || 'Download failed')
+    } finally {
+      setDownloadingId(null)
+    }
+  }
+
+  const filtered = statements.filter(st =>
+    (st.fileName || '').toLowerCase().includes(search.toLowerCase()) ||
+    (st.uploadedByName || '').toLowerCase().includes(search.toLowerCase())
+  )
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <h1 className="font-display text-3xl font-bold">Documents</h1>
+          <p className="text-muted-foreground mt-1">
+            Securely stored transaction details and PDF bank statements available to all partners.
+          </p>
+        </div>
+        <div className="flex items-center gap-2">
+          <UploadStatementModal user={user} onUploaded={() => { load(); if (triggerRefresh) triggerRefresh() }} />
+        </div>
+      </div>
+
+      <div className="space-y-4">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="relative flex-1 max-w-sm">
+            <Search className="h-4 w-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground" />
+            <Input
+              value={search}
+              onChange={e => setSearch(e.target.value)}
+              placeholder="Search by document name or uploader…"
+              className="pl-9"
+            />
+          </div>
+          <div className="text-xs text-muted-foreground">
+            Showing <b>{filtered.length}</b> of <b>{statements.length}</b> documents
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-border/60 bg-card overflow-hidden">
+          {loading ? (
+            <div className="p-8 text-center text-muted-foreground">Loading documents…</div>
+          ) : filtered.length === 0 ? (
+            <div className="p-12 text-center text-muted-foreground">
+              <Folder className="h-10 w-10 mx-auto text-muted-foreground/40 mb-3" />
+              <div className="font-medium text-base text-foreground">No documents found</div>
+              <p className="text-xs text-muted-foreground mt-1">
+                {search ? 'Try adjusting your search query.' : 'Upload PDF transaction details or bank statements to view them here.'}
+              </p>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm text-left">
+                <thead className="bg-muted/50 text-xs uppercase tracking-wider text-muted-foreground border-b border-border/60">
+                  <tr>
+                    <th className="p-3.5">Document Name</th>
+                    <th className="p-3.5">File Size</th>
+                    <th className="p-3.5">Uploaded By</th>
+                    <th className="p-3.5">Date Uploaded</th>
+                    <th className="p-3.5 text-right">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/60">
+                  {filtered.map(st => (
+                    <tr key={st.id} className="hover:bg-muted/40">
+                      <td className="p-3.5 font-medium">
+                        <div className="flex items-center gap-2.5">
+                          <Paperclip className="h-4 w-4 text-amber-500 shrink-0" />
+                          <span className="truncate max-w-md">{st.fileName}</span>
+                        </div>
+                      </td>
+                      <td className="p-3.5 text-muted-foreground">
+                        {st.fileSize ? `${(st.fileSize / 1024).toFixed(1)} KB` : 'PDF'}
+                      </td>
+                      <td className="p-3.5">{st.uploadedByName}</td>
+                      <td className="p-3.5 text-muted-foreground">
+                        {st.uploadedAt ? timeAgo(st.uploadedAt) : '—'}
+                      </td>
+                      <td className="p-3.5 text-right">
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={downloadingId === st.id}
+                          onClick={() => downloadPdf(st.id, st.fileName)}
+                          className="border-amber-400/40 text-amber-900 dark:text-amber-300 hover:bg-amber-400/10 font-semibold"
+                        >
+                          <Download className="h-3.5 w-3.5 mr-1.5" />
+                          {downloadingId === st.id ? 'Downloading…' : 'Download'}
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const TransactionForm = ({ user, onCreated }) => {
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState({ type: 'expense', category: '', amount: '', mode: 'bank', description: '', gstPct: 18, invoiceNumber: '' })
@@ -617,6 +945,22 @@ const TransactionDetail = ({ tx, user, onChange }) => {
       onChange()
     } catch (e) { toast.error(e.message) }
   }
+  const downloadStatementPdf = async (statementId, fileName) => {
+    try {
+      const doc = await api(`/bank-statements/${statementId}`, {}, user)
+      if (!doc.base64Data) throw new Error('PDF file content unavailable')
+      const link = document.createElement('a')
+      link.href = doc.base64Data.startsWith('data:') ? doc.base64Data : `data:application/pdf;base64,${doc.base64Data}`
+      link.download = fileName || 'bank_statement.pdf'
+      document.body.appendChild(link)
+      link.click()
+      document.body.removeChild(link)
+      toast.success('Downloaded original bank statement PDF')
+    } catch (e) {
+      toast.error(e.message || 'Download failed')
+    }
+  }
+
   return (
     <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
       <div className="md:col-span-2 space-y-3">
@@ -708,7 +1052,7 @@ const TransactionsView = ({ user, refresh, triggerRefresh }) => {
   const filtered = useMemo(() => {
     return txs.filter(t => {
       if (filter !== 'all' && t.status !== filter) return false
-      if (search && !`${t.description} ${t.category} ${t.invoiceNumber} ${t.createdByName}`.toLowerCase().includes(search.toLowerCase())) return false
+      if (search && !`${t.description} ${t.category} ${t.invoiceNumber} ${t.createdByName} ${t.bankStatementName || ''}`.toLowerCase().includes(search.toLowerCase())) return false
       return true
     })
   }, [txs, filter, search])
@@ -717,10 +1061,16 @@ const TransactionsView = ({ user, refresh, triggerRefresh }) => {
     <div className="space-y-4">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
         <div>
-          <h1 className="font-display text-3xl font-bold">Transactions</h1>
-          <p className="text-muted-foreground">Complete log with approval flow, GST, and discussion threads.</p>
+          <div className="flex items-center gap-3">
+            <h1 className="font-display text-3xl font-bold">Transactions</h1>
+            <BankStatementsListModal user={user} />
+          </div>
+          <p className="text-muted-foreground">Complete log with bank statement verification, approval flow, GST, and discussion threads.</p>
         </div>
-        <TransactionForm user={user} onCreated={() => { load(); triggerRefresh() }} />
+        <div className="flex items-center gap-2">
+          <UploadStatementModal user={user} onUploaded={() => { load(); triggerRefresh() }} />
+          <TransactionForm user={user} onCreated={() => { load(); triggerRefresh() }} />
+        </div>
       </div>
 
       <div className="flex flex-col md:flex-row md:items-center gap-3">
@@ -2728,6 +3078,7 @@ const App = () => {
           <main className="p-4 md:p-8 max-w-[1400px] mx-auto">
             {nav === 'dashboard' && <Dashboard user={user} refresh={refresh} />}
             {nav === 'transactions' && <TransactionsView user={user} refresh={refresh} triggerRefresh={triggerRefresh} />}
+            {nav === 'documents' && <DocumentsView user={user} refresh={refresh} triggerRefresh={triggerRefresh} />}
             {nav === 'approvals' && <ApprovalsView user={user} refresh={refresh} triggerRefresh={triggerRefresh} />}
             {nav === 'quotations' && <QuotationsView user={user} refresh={refresh} triggerRefresh={triggerRefresh} />}
             {nav === 'budgets' && <BudgetsView user={user} refresh={refresh} triggerRefresh={triggerRefresh} />}

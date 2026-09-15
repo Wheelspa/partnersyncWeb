@@ -4,6 +4,10 @@ import { MongoClient } from 'mongodb'
 import { v4 as uuidv4 } from 'uuid'
 import crypto from 'crypto'
 import { Resend } from 'resend'
+import zlib from 'zlib'
+import pdfParse from 'pdf-parse/lib/pdf-parse.js'
+
+
 
 // Use public DNS servers for MongoDB Atlas SRV resolution.
 // The local DNS resolver was refusing Node.js SRV queries.
@@ -1051,6 +1055,59 @@ async function handle(req, ctx) {
       await db.collection('transactions').updateOne({ id }, { $push: { comments: comment } })
       await audit(db, 'COMMENT', 'transaction', id, null, comment, user, 'Comment added')
       return ok(comment)
+    }
+
+    // === Bank Statements ===
+    if (path === 'bank-statements/upload' && method === 'POST') {
+      const body = await req.json().catch(() => ({}))
+      if (!body || !body.fileData) return err('fileData (base64 string) is required', 400)
+
+      const fileName = body.fileName || 'bank_statement.pdf'
+      const base64Str = body.fileData.includes(',') ? body.fileData.split(',')[1] : body.fileData
+      const pdfBuffer = Buffer.from(base64Str, 'base64')
+
+      if (!pdfBuffer || pdfBuffer.length === 0) {
+        return err('Invalid or empty PDF file', 400)
+      }
+
+      console.log('[BankStatementUpload] Uploading bank statement document:', fileName, 'Size:', pdfBuffer.length)
+
+      const statementId = uuidv4()
+      const statementDoc = {
+        id: statementId,
+        fileName,
+        fileSize: pdfBuffer.length,
+        contentType: 'application/pdf',
+        base64Data: body.fileData,
+        uploadedBy: user.id,
+        uploadedByName: user.name,
+        uploadedAt: new Date().toISOString(),
+      }
+      await db.collection('bank_statements').insertOne(statementDoc)
+
+      delete statementDoc._id
+      const cleanStatement = { ...statementDoc, base64Data: undefined }
+      await audit(db, 'BANK_STATEMENT_UPLOAD', 'bank_statement', statementId, null, cleanStatement, user, `Uploaded bank statement "${fileName}"`)
+
+      return ok({
+        statement: cleanStatement,
+      })
+    }
+
+    if (path === 'bank-statements' && method === 'GET') {
+      const statements = await db.collection('bank_statements')
+        .find({}, { projection: { _id: 0, base64Data: 0 } })
+        .sort({ uploadedAt: -1 })
+        .toArray()
+      return ok(statements)
+    }
+
+    const bankStatementDetail = path.match(/^bank-statements\/([^/]+)$/)
+    if (bankStatementDetail && method === 'GET') {
+      const [, id] = bankStatementDetail
+      const st = await db.collection('bank_statements').findOne({ id }, { projection: { _id: 0 } })
+      if (!st) return err('Bank statement not found', 404)
+      return ok(st)
     }
 
     // === Budgets ===
