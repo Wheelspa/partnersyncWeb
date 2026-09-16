@@ -1059,6 +1059,9 @@ async function handle(req, ctx) {
 
     // === Bank Statements ===
     if (path === 'bank-statements/upload' && method === 'POST') {
+      if (user.role === 'partner') {
+        return err('Forbidden: Partners are not permitted to upload statement documents', 403)
+      }
       const body = await req.json().catch(() => ({}))
       if (!body || !body.fileData) return err('fileData (base64 string) is required', 400)
 
@@ -1117,6 +1120,9 @@ async function handle(req, ctx) {
       return ok(b.map(x => annotateApprovalProgress(x, partners)))
     }
     if (path === 'budgets' && method === 'POST') {
+      if (user.role === 'partner') {
+        return err('Forbidden: Partners are not permitted to create budget entries', 403)
+      }
       const body = await req.json()
       const doc = {
         id: uuidv4(),

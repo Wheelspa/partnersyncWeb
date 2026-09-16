@@ -763,7 +763,7 @@ const DocumentsView = ({ user, refresh, triggerRefresh }) => {
           </p>
         </div>
         <div className="flex items-center gap-2">
-          <UploadStatementModal user={user} onUploaded={() => { load(); if (triggerRefresh) triggerRefresh() }} />
+          {user?.role !== 'partner' && <UploadStatementModal user={user} onUploaded={() => { load(); if (triggerRefresh) triggerRefresh() }} />}
         </div>
       </div>
 
@@ -1068,7 +1068,7 @@ const TransactionsView = ({ user, refresh, triggerRefresh }) => {
           <p className="text-muted-foreground">Complete log with bank statement verification, approval flow, GST, and discussion threads.</p>
         </div>
         <div className="flex items-center gap-2">
-          <UploadStatementModal user={user} onUploaded={() => { load(); triggerRefresh() }} />
+          {user?.role !== 'partner' && <UploadStatementModal user={user} onUploaded={() => { load(); triggerRefresh() }} />}
           <TransactionForm user={user} onCreated={() => { load(); triggerRefresh() }} />
         </div>
       </div>
@@ -1631,35 +1631,37 @@ const BudgetsView = ({ user, refresh, triggerRefresh }) => {
           <h1 className="font-display text-3xl font-bold">Budgets</h1>
           <p className="text-muted-foreground">Plan, approve, and monitor spend versus plan.</p>
         </div>
-        <Dialog open={open} onOpenChange={setOpen}>
-          <DialogTrigger asChild>
-            <Button className="gold-gradient text-neutral-900 hover:opacity-90 font-semibold"><Plus className="h-4 w-4 mr-1" /> New Budget</Button>
-          </DialogTrigger>
-          <DialogContent>
-            <DialogHeader><DialogTitle className="font-display">Create Budget</DialogTitle></DialogHeader>
-            <div className="space-y-3">
-              <div><label className="text-xs text-muted-foreground">Name</label><Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
-              <div><label className="text-xs text-muted-foreground">Type</label>
-                <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v })}>
-                  <SelectTrigger><SelectValue /></SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="annual">Annual</SelectItem>
-                    <SelectItem value="marketing">Marketing</SelectItem>
-                    <SelectItem value="operational">Operational</SelectItem>
-                    <SelectItem value="capex">Capital Expenditure</SelectItem>
-                    <SelectItem value="project">Project</SelectItem>
-                  </SelectContent>
-                </Select>
+        {user?.role !== 'partner' && (
+          <Dialog open={open} onOpenChange={setOpen}>
+            <DialogTrigger asChild>
+              <Button className="gold-gradient text-neutral-900 hover:opacity-90 font-semibold"><Plus className="h-4 w-4 mr-1" /> New Budget</Button>
+            </DialogTrigger>
+            <DialogContent>
+              <DialogHeader><DialogTitle className="font-display">Create Budget</DialogTitle></DialogHeader>
+              <div className="space-y-3">
+                <div><label className="text-xs text-muted-foreground">Name</label><Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
+                <div><label className="text-xs text-muted-foreground">Type</label>
+                  <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v })}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="annual">Annual</SelectItem>
+                      <SelectItem value="marketing">Marketing</SelectItem>
+                      <SelectItem value="operational">Operational</SelectItem>
+                      <SelectItem value="capex">Capital Expenditure</SelectItem>
+                      <SelectItem value="project">Project</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div><label className="text-xs text-muted-foreground">Amount</label><Input type="number" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} /></div>
+                <div><label className="text-xs text-muted-foreground">Period</label><Input value={form.period} onChange={e => setForm({ ...form, period: e.target.value })} /></div>
               </div>
-              <div><label className="text-xs text-muted-foreground">Amount</label><Input type="number" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} /></div>
-              <div><label className="text-xs text-muted-foreground">Period</label><Input value={form.period} onChange={e => setForm({ ...form, period: e.target.value })} /></div>
-            </div>
-            <DialogFooter>
-              <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
-              <Button onClick={submit} className="gold-gradient text-neutral-900 font-semibold">Create</Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
+                <Button onClick={submit} className="gold-gradient text-neutral-900 font-semibold">Create</Button>
+              </DialogFooter>
+            </DialogContent>
+          </Dialog>
+        )}
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
