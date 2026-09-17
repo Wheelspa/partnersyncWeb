@@ -32,6 +32,11 @@ const ROLES = [
   { id: 'admin_officer', name: 'Admin Officer' },
 ]
 
+const MONTHS = [
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December'
+]
+
 const NAV = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'transactions', label: 'Transactions', icon: Wallet },
@@ -95,6 +100,21 @@ const StatusPill = ({ status }) => {
   }
   const s = map[status] || { c: 'bg-muted text-foreground', l: status }
   return <span className={'approval-pill ' + s.c}>{s.l}</span>
+}
+
+const PriorityBadge = ({ priority = 'medium' }) => {
+  const p = (priority || 'medium').toLowerCase()
+  const map = {
+    high: { c: 'bg-rose-100 text-rose-800 border-rose-300 dark:bg-rose-950/50 dark:text-rose-300 dark:border-rose-800/40', l: 'High Priority' },
+    medium: { c: 'bg-amber-100 text-amber-800 border-amber-300 dark:bg-amber-950/50 dark:text-amber-300 dark:border-amber-800/40', l: 'Medium Priority' },
+    low: { c: 'bg-emerald-100 text-emerald-800 border-emerald-300 dark:bg-emerald-950/50 dark:text-emerald-300 dark:border-emerald-800/40', l: 'Low Priority' },
+  }
+  const s = map[p] || map.medium
+  return (
+    <span className={'inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold border ' + s.c}>
+      {s.l}
+    </span>
+  )
 }
 
 const TypeBadge = ({ type }) => {
@@ -1213,7 +1233,10 @@ const ApprovalsView = ({ user, refresh, triggerRefresh }) => {
             <div key={b.id} className="rounded-xl border border-border/60 bg-card p-4 space-y-3">
               <div className="flex items-center gap-4">
                 <div className="flex-1">
-                  <div className="font-medium">{b.name}</div>
+                  <div className="font-medium flex items-center gap-2 flex-wrap">
+                    {b.name}
+                    <PriorityBadge priority={b.priority} />
+                  </div>
                   <div className="text-xs text-muted-foreground mt-1">{b.type} · {b.period} · by {b.createdByName}</div>
                 </div>
                 <div className="text-right"><div className="text-lg font-display font-bold">{inr(b.amount)}</div></div>
@@ -1607,21 +1630,68 @@ const QuotationsView = ({ user, refresh, triggerRefresh }) => {
   )
 }
 
+const getCurrentMonthName = () => new Date().toLocaleString('en-US', { month: 'long' })
+
 const BudgetsView = ({ user, refresh, triggerRefresh }) => {
   const [items, setItems] = useState([])
+  const [categories, setCategories] = useState([])
   const [open, setOpen] = useState(false)
-  const [form, setForm] = useState({ name: '', type: 'operational', amount: '', period: String(new Date().getFullYear()) })
+  const [form, setForm] = useState({
+    name: '',
+    type: 'operational',
+    priority: 'medium',
+    amount: '',
+    periodMonth: getCurrentMonthName(),
+    periodYear: String(new Date().getFullYear()),
+  })
+  
   const load = () => api('/budgets', {}, user).then(setItems)
-  useEffect(() => { load() }, [user, refresh])
+  const loadCategories = () => api('/budget-categories', {}, user).then(cats => {
+    setCategories(cats)
+    if (cats.length > 0 && !form.type) {
+      setForm(prev => ({ ...prev, type: cats[0].slug || cats[0].id }))
+    }
+  }).catch(() => {})
+
+  useEffect(() => { load(); loadCategories() }, [user, refresh])
 
   const submit = async () => {
     if (!form.name || !form.amount) return toast.error('Name and amount required')
+    const finalType = form.type || (categories[0]?.slug || 'operational')
+    const pMonth = form.periodMonth || getCurrentMonthName()
+    const pYear = form.periodYear || String(new Date().getFullYear())
+    const periodStr = `${pMonth} ${pYear}`
+
     try {
-      await api('/budgets', { method: 'POST', body: JSON.stringify(form) }, user)
+      await api('/budgets', {
+        method: 'POST',
+        body: JSON.stringify({
+          name: form.name,
+          type: finalType,
+          priority: form.priority || 'medium',
+          amount: form.amount,
+          periodMonth: pMonth,
+          periodYear: Number(pYear),
+          period: periodStr,
+        })
+      }, user)
       toast.success('Budget created')
-      setOpen(false); setForm({ name: '', type: 'operational', amount: '', period: String(new Date().getFullYear()) })
+      setOpen(false);
+      setForm({
+        name: '',
+        type: categories[0]?.slug || 'operational',
+        priority: 'medium',
+        amount: '',
+        periodMonth: getCurrentMonthName(),
+        periodYear: String(new Date().getFullYear()),
+      })
       load(); triggerRefresh()
     } catch (e) { toast.error(e.message) }
+  }
+
+  const getCategoryLabel = (typeKey) => {
+    const match = categories.find(c => c.slug === typeKey || c.id === typeKey || c.name?.toLowerCase() === (typeKey || '').toLowerCase())
+    return match ? match.name : typeKey
   }
 
   return (
@@ -1641,19 +1711,54 @@ const BudgetsView = ({ user, refresh, triggerRefresh }) => {
               <div className="space-y-3">
                 <div><label className="text-xs text-muted-foreground">Name</label><Input value={form.name} onChange={e => setForm({ ...form, name: e.target.value })} /></div>
                 <div><label className="text-xs text-muted-foreground">Type</label>
-                  <Select value={form.type} onValueChange={(v) => setForm({ ...form, type: v })}>
+                  <Select value={form.type || (categories[0]?.slug || 'operational')} onValueChange={(v) => setForm({ ...form, type: v })}>
                     <SelectTrigger><SelectValue /></SelectTrigger>
                     <SelectContent>
-                      <SelectItem value="annual">Annual</SelectItem>
-                      <SelectItem value="marketing">Marketing</SelectItem>
-                      <SelectItem value="operational">Operational</SelectItem>
-                      <SelectItem value="capex">Capital Expenditure</SelectItem>
-                      <SelectItem value="project">Project</SelectItem>
+                      {categories.length > 0 ? (
+                        categories.map(c => (
+                          <SelectItem key={c.id || c.slug} value={c.slug || c.id}>{c.name}</SelectItem>
+                        ))
+                      ) : (
+                        <>
+                          <SelectItem value="annual">Annual</SelectItem>
+                          <SelectItem value="marketing">Marketing</SelectItem>
+                          <SelectItem value="operational">Operational</SelectItem>
+                          <SelectItem value="capex">Capital Expenditure</SelectItem>
+                          <SelectItem value="project">Project</SelectItem>
+                        </>
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div>
+                  <label className="text-xs text-muted-foreground">Priority</label>
+                  <Select value={form.priority || 'medium'} onValueChange={(v) => setForm({ ...form, priority: v })}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="high">High</SelectItem>
+                      <SelectItem value="medium">Medium</SelectItem>
+                      <SelectItem value="low">Low</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 <div><label className="text-xs text-muted-foreground">Amount</label><Input type="number" value={form.amount} onChange={e => setForm({ ...form, amount: e.target.value })} /></div>
-                <div><label className="text-xs text-muted-foreground">Period</label><Input value={form.period} onChange={e => setForm({ ...form, period: e.target.value })} /></div>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs text-muted-foreground">Month</label>
+                    <Select value={form.periodMonth} onValueChange={(v) => setForm({ ...form, periodMonth: v })}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        {MONTHS.map(m => (
+                          <SelectItem key={m} value={m}>{m}</SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div>
+                    <label className="text-xs text-muted-foreground">Year</label>
+                    <Input type="number" value={form.periodYear} onChange={e => setForm({ ...form, periodYear: e.target.value })} placeholder="e.g. 2026" />
+                  </div>
+                </div>
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setOpen(false)}>Cancel</Button>
@@ -1671,8 +1776,11 @@ const BudgetsView = ({ user, refresh, triggerRefresh }) => {
             <div key={b.id} className="rounded-xl border border-border/60 bg-card p-5">
               <div className="flex items-start justify-between">
                 <div>
-                  <div className="font-display text-lg font-semibold">{b.name}</div>
-                  <div className="text-xs text-muted-foreground uppercase tracking-wider">{b.type} · {b.period}</div>
+                  <div className="font-display text-lg font-semibold flex items-center gap-2 flex-wrap">
+                    {b.name}
+                    <PriorityBadge priority={b.priority} />
+                  </div>
+                  <div className="text-xs text-muted-foreground uppercase tracking-wider">{getCategoryLabel(b.type)} · {b.period}</div>
                 </div>
                 <StatusPill status={b.status} />
               </div>
@@ -2410,6 +2518,15 @@ const AdminPanel = ({ user, refresh, triggerRefresh }) => {
   const [inviteResult, setInviteResult] = useState(null)
   const [inviteLoading, setInviteLoading] = useState(false)
 
+  // Budget Category State
+  const [categories, setCategories] = useState([])
+  const [catLoading, setCatLoading] = useState(false)
+  const [catModalOpen, setCatModalOpen] = useState(false)
+  const [catEditModalOpen, setCatEditModalOpen] = useState(false)
+  const [selectedCat, setSelectedCat] = useState(null)
+  const [catName, setCatName] = useState('')
+  const [catSubmitting, setCatSubmitting] = useState(false)
+
   const load = async () => {
     setLoading(true)
     try {
@@ -2420,7 +2537,43 @@ const AdminPanel = ({ user, refresh, triggerRefresh }) => {
       setUsers(d); setPending(p)
     } catch (e) { toast.error(e.message) } finally { setLoading(false) }
   }
-  useEffect(() => { load() }, [user, refresh])
+
+  const loadCategories = async () => {
+    setCatLoading(true)
+    try {
+      const d = await api('/budget-categories', {}, user)
+      setCategories(d)
+    } catch (e) { toast.error(e.message) } finally { setCatLoading(false) }
+  }
+
+  useEffect(() => { load(); loadCategories() }, [user, refresh])
+
+  const handleCreateCategory = async () => {
+    if (!catName.trim()) return toast.error('Category name is required')
+    setCatSubmitting(true)
+    try {
+      await api('/budget-categories', { method: 'POST', body: JSON.stringify({ name: catName.trim() }) }, user)
+      toast.success('Budget category created')
+      setCatModalOpen(false)
+      setCatName('')
+      loadCategories()
+      triggerRefresh()
+    } catch (e) { toast.error(e.message) } finally { setCatSubmitting(false) }
+  }
+
+  const handleEditCategory = async () => {
+    if (!catName.trim()) return toast.error('Category name is required')
+    setCatSubmitting(true)
+    try {
+      await api(`/budget-categories/${selectedCat.id}`, { method: 'PATCH', body: JSON.stringify({ name: catName.trim() }) }, user)
+      toast.success('Budget category updated')
+      setCatEditModalOpen(false)
+      setSelectedCat(null)
+      setCatName('')
+      loadCategories()
+      triggerRefresh()
+    } catch (e) { toast.error(e.message) } finally { setCatSubmitting(false) }
+  }
 
   const openApprove = (p) => {
     setApproveTarget(p)
@@ -2510,7 +2663,7 @@ const AdminPanel = ({ user, refresh, triggerRefresh }) => {
       const r = await api('/factory-reset', { method: 'POST', body: JSON.stringify({ confirm: 'ERASE' }) }, user)
       toast.success(r.message || 'All data erased')
       setFactoryOpen(false); setConfirmText('')
-      load(); triggerRefresh()
+      load(); loadCategories(); triggerRefresh()
     } catch (e) { toast.error(e.message) } finally { setFactoryLoading(false) }
   }
 
@@ -2520,8 +2673,8 @@ const AdminPanel = ({ user, refresh, triggerRefresh }) => {
         <div className="flex items-center gap-3">
           <div className="h-10 w-10 rounded-lg gold-gradient grid place-items-center text-neutral-900"><Crown className="h-5 w-5" /></div>
           <div>
-            <h1 className="font-display text-3xl font-bold flex items-center gap-2">Super Admin Panel</h1>
-            <p className="text-muted-foreground">Manage every user, role, share allocation, and access control.</p>
+            <h1 className="font-display text-3xl font-bold flex items-center gap-2">Admin Section</h1>
+            <p className="text-muted-foreground">Manage users, access control, and budget category settings.</p>
           </div>
         </div>
         <Button onClick={() => { setInviteOpen(true); setInviteResult(null) }} className="gold-gradient text-neutral-900 font-semibold">
@@ -2529,150 +2682,204 @@ const AdminPanel = ({ user, refresh, triggerRefresh }) => {
         </Button>
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
-        <Kpi label="Total Users" value={stats.total} icon={Users} tone="gold" />
-        <Kpi label="Active" value={stats.active} sub={`${stats.total - stats.active} inactive`} icon={UserCheck} />
-        <Kpi label="Partners" value={stats.partners} icon={ShieldCheck} tone="dark" />
-        <Kpi label="Total Share" value={stats.totalShare + '%'} sub="Allocated" icon={CircleDollarSign} />
-        <Kpi label="Total Capital" value={compact(stats.totalCapital)} sub="Invested" icon={Landmark} />
-      </div>
+      <Tabs defaultValue="users">
+        <TabsList className="bg-muted">
+          <TabsTrigger value="users">User Roster & Access <Badge className="ml-2" variant="secondary">{users.length}</Badge></TabsTrigger>
+          <TabsTrigger value="categories">Budget Categories <Badge className="ml-2" variant="secondary">{categories.length}</Badge></TabsTrigger>
+        </TabsList>
 
-      {pending.length > 0 && (
-        <div className="rounded-xl border-2 border-amber-400/60 bg-amber-50/60 dark:bg-amber-500/10 overflow-hidden">
-          <div className="p-4 border-b border-amber-400/40 bg-amber-400/20">
-            <div className="flex items-center gap-2">
-              <div className="h-8 w-8 rounded-lg gold-gradient grid place-items-center text-neutral-900">
-                <Clock className="h-4 w-4" />
-              </div>
-              <div>
-                <h3 className="font-display text-lg font-semibold">Pending Signup Approvals</h3>
-                <p className="text-xs text-muted-foreground">{pending.length} account{pending.length === 1 ? '' : 's'} awaiting your review. They cannot sign in until you approve.</p>
-              </div>
-            </div>
+        <TabsContent value="users" className="mt-4 space-y-5">
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+            <Kpi label="Total Users" value={stats.total} icon={Users} tone="gold" />
+            <Kpi label="Active" value={stats.active} sub={`${stats.total - stats.active} inactive`} icon={UserCheck} />
+            <Kpi label="Partners" value={stats.partners} icon={ShieldCheck} tone="dark" />
+            <Kpi label="Total Share" value={stats.totalShare + '%'} sub="Allocated" icon={CircleDollarSign} />
+            <Kpi label="Total Capital" value={compact(stats.totalCapital)} sub="Invested" icon={Landmark} />
           </div>
-          <div className="divide-y divide-amber-400/20">
-            {pending.map(p => (
-              <div key={p.id} className="p-4 flex flex-col md:flex-row md:items-center gap-3">
-                <div className="h-10 w-10 rounded-full bg-white/80 grid place-items-center text-sm font-bold text-neutral-800">
-                  {p.name.split(' ').map(x => x[0]).join('').slice(0, 2)}
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <div className="font-medium">{p.name}</div>
-                    <Badge className="bg-amber-500 text-neutral-900 border-0 text-[10px]">Awaiting role</Badge>
+
+          {pending.length > 0 && (
+            <div className="rounded-xl border-2 border-amber-400/60 bg-amber-50/60 dark:bg-amber-500/10 overflow-hidden">
+              <div className="p-4 border-b border-amber-400/40 bg-amber-400/20">
+                <div className="flex items-center gap-2">
+                  <div className="h-8 w-8 rounded-lg gold-gradient grid place-items-center text-neutral-900">
+                    <Clock className="h-4 w-4" />
                   </div>
-                  <div className="text-xs text-muted-foreground mt-0.5">
-                    {p.email} · Signed up {timeAgo(p.createdAt)}
+                  <div>
+                    <h3 className="font-display text-lg font-semibold">Pending Signup Approvals</h3>
+                    <p className="text-xs text-muted-foreground">{pending.length} account{pending.length === 1 ? '' : 's'} awaiting review.</p>
                   </div>
                 </div>
-                <div className="flex gap-2">
-                  <Button size="sm" onClick={() => openApprove(p)}
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white">
-                    <Check className="h-4 w-4 mr-1" /> Approve & Assign Role
-                  </Button>
-                  <Button size="sm" variant="destructive" onClick={() => rejectSignup(p.id)}>
-                    <X className="h-4 w-4 mr-1" /> Reject
-                  </Button>
-                </div>
               </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <div className="rounded-xl border border-border/60 bg-card overflow-hidden">
-        <div className="p-5 border-b border-border/60 flex items-center justify-between">
-          <div>
-            <h3 className="font-display text-lg font-semibold">All Users</h3>
-            <p className="text-xs text-muted-foreground">Full roster with activity stats. Click any row to edit.</p>
-          </div>
-        </div>
-        {loading && <div className="p-6 text-muted-foreground">Loading users…</div>}
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead className="bg-muted/50 text-xs uppercase tracking-wider text-muted-foreground">
-              <tr>
-                <th className="text-left p-3">User</th>
-                <th className="text-left p-3">Role</th>
-                <th className="text-right p-3">Share</th>
-                <th className="text-right p-3">Capital</th>
-                <th className="text-right p-3">Tx Created</th>
-                <th className="text-right p-3">Approved</th>
-                <th className="text-right p-3">Volume</th>
-                <th className="text-left p-3">Last Login</th>
-                <th className="text-left p-3">Status</th>
-                <th className="text-right p-3">Actions</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-border/60">
-              {users.map(u => (
-                <tr key={u.id} className="hover:bg-muted/40">
-                  <td className="p-3">
-                    <div className="flex items-center gap-2.5">
-                      <div className={'h-8 w-8 rounded-full grid place-items-center text-xs font-bold ' +
-                        (u.role === 'super_admin' ? 'gold-gradient text-neutral-900' : 'bg-muted text-foreground')}>
-                        {u.name.split(' ').map(x => x[0]).join('').slice(0, 2)}
-                      </div>
-                    <div>
-                      <div className="font-medium flex items-center gap-1.5">
-                        {u.name}
-                        {u.role === 'super_admin' && <Crown className="h-3.5 w-3.5 text-amber-500" />}
-                        {u.approvalStatus === 'pending' && <Badge className="bg-amber-500 text-neutral-900 border-0 text-[9px]">Pending</Badge>}
-                        {u.approvalStatus === 'rejected' && <Badge variant="destructive" className="text-[9px]">Rejected</Badge>}
-                      </div>
-                      <div className="text-xs text-muted-foreground">{u.email}</div>
+              <div className="divide-y divide-amber-400/20">
+                {pending.map(p => (
+                  <div key={p.id} className="p-4 flex flex-col md:flex-row md:items-center gap-3">
+                    <div className="h-10 w-10 rounded-full bg-white/80 grid place-items-center text-sm font-bold text-neutral-800">
+                      {p.name.split(' ').map(x => x[0]).join('').slice(0, 2)}
                     </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-2 flex-wrap">
+                        <div className="font-medium">{p.name}</div>
+                        <Badge className="bg-amber-500 text-neutral-900 border-0 text-[10px]">Awaiting role</Badge>
+                      </div>
+                      <div className="text-xs text-muted-foreground mt-0.5">
+                        {p.email} · Signed up {timeAgo(p.createdAt)}
+                      </div>
                     </div>
-                  </td>
-                  <td className="p-3"><Badge variant="outline" className="capitalize">{u.role ? u.role.replace('_', ' ') : 'Pending role'}</Badge></td>
-                  <td className="p-3 text-right font-medium">{u.share || 0}%</td>
-                  <td className="p-3 text-right">{compact(u.capital)}</td>
-                  <td className="p-3 text-right">{u.stats?.transactionsCreated ?? 0}</td>
-                  <td className="p-3 text-right">{u.stats?.transactionsApproved ?? 0}</td>
-                  <td className="p-3 text-right font-semibold">{compact(u.stats?.totalVolume || 0)}</td>
-                  <td className="p-3 text-xs text-muted-foreground">{u.lastLogin ? new Date(u.lastLogin).toLocaleDateString('en-IN') : '—'}</td>
-                  <td className="p-3">
-                    {u.active !== false
-                      ? <span className="approval-pill bg-emerald-100 text-emerald-800">Active</span>
-                      : <span className="approval-pill bg-rose-100 text-rose-800">Inactive</span>}
-                  </td>
-                  <td className="p-3 text-right">
-                    <div className="flex justify-end gap-1">
-                      <Button size="sm" variant="ghost" onClick={() => openEdit(u)}><UserCog className="h-4 w-4" /></Button>
-                      <Button size="sm" variant="ghost" onClick={() => toggleActive(u)}
-                        title={u.active !== false ? 'Deactivate' : 'Reactivate'}>
-                        {u.active !== false ? <UserX className="h-4 w-4 text-rose-600" /> : <UserCheck className="h-4 w-4 text-emerald-600" />}
+                    <div className="flex gap-2">
+                      <Button size="sm" onClick={() => openApprove(p)}
+                        className="bg-emerald-600 hover:bg-emerald-700 text-white">
+                        <Check className="h-4 w-4 mr-1" /> Approve & Assign Role
+                      </Button>
+                      <Button size="sm" variant="destructive" onClick={() => rejectSignup(p.id)}>
+                        <X className="h-4 w-4 mr-1" /> Reject
                       </Button>
                     </div>
-                  </td>
-                </tr>
-              ))}
-              {users.length === 0 && !loading && <tr><td colSpan={10} className="p-8 text-center text-muted-foreground">No users yet.</td></tr>}
-            </tbody>
-          </table>
-        </div>
-      </div>
-
-      <div className="rounded-xl border border-rose-400/40 bg-rose-50/40 dark:bg-rose-500/5 p-5">
-        <div className="flex flex-col md:flex-row md:items-center gap-4">
-          <div className="flex-1">
-            <div className="flex items-center gap-2 mb-1">
-              <div className="h-8 w-8 rounded-lg bg-rose-500 grid place-items-center text-white">
-                <UserX className="h-4 w-4" />
+                  </div>
+                ))}
               </div>
-              <h3 className="font-display text-lg font-semibold text-rose-900 dark:text-rose-300">Danger Zone · Factory Reset</h3>
             </div>
-            <p className="text-sm text-rose-900/80 dark:text-rose-200/80">
-              Erase every transaction, budget, quotation, file, audit log, email, and user account.
-              Only <b>your Super Admin account</b> will be preserved so you can log back in.
-              This action cannot be undone.
-            </p>
+          )}
+
+          <div className="rounded-xl border border-border/60 bg-card overflow-hidden">
+            <div className="p-5 border-b border-border/60 flex items-center justify-between">
+              <div>
+                <h3 className="font-display text-lg font-semibold">All Users</h3>
+                <p className="text-xs text-muted-foreground">Full roster with activity stats. Click any row to edit.</p>
+              </div>
+            </div>
+            {loading && <div className="p-6 text-muted-foreground">Loading users…</div>}
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-xs uppercase tracking-wider text-muted-foreground">
+                  <tr>
+                    <th className="text-left p-3">User</th>
+                    <th className="text-left p-3">Role</th>
+                    <th className="text-right p-3">Share</th>
+                    <th className="text-right p-3">Capital</th>
+                    <th className="text-right p-3">Tx Created</th>
+                    <th className="text-right p-3">Approved</th>
+                    <th className="text-right p-3">Volume</th>
+                    <th className="text-left p-3">Last Login</th>
+                    <th className="text-left p-3">Status</th>
+                    <th className="text-right p-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/60">
+                  {users.map(u => (
+                    <tr key={u.id} className="hover:bg-muted/40">
+                      <td className="p-3">
+                        <div className="flex items-center gap-2.5">
+                          <div className={'h-8 w-8 rounded-full grid place-items-center text-xs font-bold ' +
+                            (u.role === 'super_admin' ? 'gold-gradient text-neutral-900' : 'bg-muted text-foreground')}>
+                            {u.name.split(' ').map(x => x[0]).join('').slice(0, 2)}
+                          </div>
+                        <div>
+                          <div className="font-medium flex items-center gap-1.5">
+                            {u.name}
+                            {u.role === 'super_admin' && <Crown className="h-3.5 w-3.5 text-amber-500" />}
+                            {u.approvalStatus === 'pending' && <Badge className="bg-amber-500 text-neutral-900 border-0 text-[9px]">Pending</Badge>}
+                            {u.approvalStatus === 'rejected' && <Badge variant="destructive" className="text-[9px]">Rejected</Badge>}
+                          </div>
+                          <div className="text-xs text-muted-foreground">{u.email}</div>
+                        </div>
+                        </div>
+                      </td>
+                      <td className="p-3"><Badge variant="outline" className="capitalize">{u.role ? u.role.replace('_', ' ') : 'Pending role'}</Badge></td>
+                      <td className="p-3 text-right font-medium">{u.share || 0}%</td>
+                      <td className="p-3 text-right">{compact(u.capital)}</td>
+                      <td className="p-3 text-right">{u.stats?.transactionsCreated ?? 0}</td>
+                      <td className="p-3 text-right">{u.stats?.transactionsApproved ?? 0}</td>
+                      <td className="p-3 text-right font-semibold">{compact(u.stats?.totalVolume || 0)}</td>
+                      <td className="p-3 text-xs text-muted-foreground">{u.lastLogin ? new Date(u.lastLogin).toLocaleDateString('en-IN') : '—'}</td>
+                      <td className="p-3">
+                        {u.active !== false
+                          ? <span className="approval-pill bg-emerald-100 text-emerald-800">Active</span>
+                          : <span className="approval-pill bg-rose-100 text-rose-800">Inactive</span>}
+                      </td>
+                      <td className="p-3 text-right">
+                        <div className="flex justify-end gap-1">
+                          <Button size="sm" variant="ghost" onClick={() => openEdit(u)}><UserCog className="h-4 w-4" /></Button>
+                          <Button size="sm" variant="ghost" onClick={() => toggleActive(u)}
+                            title={u.active !== false ? 'Deactivate' : 'Reactivate'}>
+                            {u.active !== false ? <UserX className="h-4 w-4 text-rose-600" /> : <UserCheck className="h-4 w-4 text-emerald-600" />}
+                          </Button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                  {users.length === 0 && !loading && <tr><td colSpan={10} className="p-8 text-center text-muted-foreground">No users yet.</td></tr>}
+                </tbody>
+              </table>
+            </div>
           </div>
-          <Button variant="destructive" onClick={() => { setFactoryOpen(true); setConfirmText('') }}>
-            <UserX className="h-4 w-4 mr-1.5" /> Factory Reset
-          </Button>
-        </div>
-      </div>
+
+          <div className="rounded-xl border border-rose-400/40 bg-rose-50/40 dark:bg-rose-500/5 p-5">
+            <div className="flex flex-col md:flex-row md:items-center gap-4">
+              <div className="flex-1">
+                <div className="flex items-center gap-2 mb-1">
+                  <div className="h-8 w-8 rounded-lg bg-rose-500 grid place-items-center text-white">
+                    <UserX className="h-4 w-4" />
+                  </div>
+                  <h3 className="font-display text-lg font-semibold text-rose-900 dark:text-rose-300">Danger Zone · Factory Reset</h3>
+                </div>
+                <p className="text-sm text-rose-900/80 dark:text-rose-200/80">
+                  Erase every transaction, budget, quotation, file, audit log, email, and user account.
+                  Only <b>your Super Admin account</b> will be preserved so you can log back in.
+                  This action cannot be undone.
+                </p>
+              </div>
+              <Button variant="destructive" onClick={() => { setFactoryOpen(true); setConfirmText('') }}>
+                <UserX className="h-4 w-4 mr-1.5" /> Factory Reset
+              </Button>
+            </div>
+          </div>
+        </TabsContent>
+
+        <TabsContent value="categories" className="mt-4 space-y-4">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 bg-card p-5 rounded-xl border border-border/60">
+            <div>
+              <h3 className="font-display text-xl font-bold">Budget Categories</h3>
+              <p className="text-sm text-muted-foreground">Manage expenditure types and budget category options available across PartnerSync.</p>
+            </div>
+            <Button onClick={() => { setCatName(''); setCatModalOpen(true) }} className="gold-gradient text-neutral-900 font-semibold">
+              <Plus className="h-4 w-4 mr-1.5" /> New Category
+            </Button>
+          </div>
+
+          <div className="rounded-xl border border-border/60 bg-card overflow-hidden">
+            {catLoading && <div className="p-6 text-muted-foreground">Loading categories…</div>}
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-muted/50 text-xs uppercase tracking-wider text-muted-foreground">
+                  <tr>
+                    <th className="text-left p-3">Category Name</th>
+                    <th className="text-left p-3">System Key / Slug</th>
+                    <th className="text-left p-3">Created Date</th>
+                    <th className="text-right p-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/60">
+                  {categories.map(c => (
+                    <tr key={c.id || c.slug} className="hover:bg-muted/40">
+                      <td className="p-3 font-semibold text-foreground">{c.name}</td>
+                      <td className="p-3"><Badge variant="outline" className="font-mono text-xs">{c.slug || c.id}</Badge></td>
+                      <td className="p-3 text-xs text-muted-foreground">{c.createdAt ? new Date(c.createdAt).toLocaleDateString('en-IN') : '—'}</td>
+                      <td className="p-3 text-right">
+                        <Button size="sm" variant="ghost" onClick={() => { setSelectedCat(c); setCatName(c.name); setCatEditModalOpen(true) }}>
+                          <UserCog className="h-4 w-4 mr-1" /> Edit / Rename
+                        </Button>
+                      </td>
+                    </tr>
+                  ))}
+                  {categories.length === 0 && !catLoading && (
+                    <tr><td colSpan={4} className="p-8 text-center text-muted-foreground">No budget categories found.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </TabsContent>
+      </Tabs>
 
       <Dialog open={inviteOpen} onOpenChange={(o) => { if (!o) { setInviteOpen(false); setInviteResult(null) } }}>
         <DialogContent className="max-w-md">
@@ -2893,6 +3100,50 @@ const AdminPanel = ({ user, refresh, triggerRefresh }) => {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Create Category Modal */}
+      <Dialog open={catModalOpen} onOpenChange={setCatModalOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="font-display">Create Budget Category</DialogTitle>
+            <DialogDescription>Add a new budget category option (e.g. Partner Capital, Loan).</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div>
+              <label className="text-xs text-muted-foreground">Category Name</label>
+              <Input placeholder="e.g. Partner Capital" value={catName} onChange={e => setCatName(e.target.value)} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCatModalOpen(false)}>Cancel</Button>
+            <Button onClick={handleCreateCategory} disabled={catSubmitting} className="gold-gradient text-neutral-900 font-semibold">
+              {catSubmitting ? 'Creating…' : 'Create Category'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Category Modal */}
+      <Dialog open={catEditModalOpen} onOpenChange={setCatEditModalOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle className="font-display">Edit Budget Category</DialogTitle>
+            <DialogDescription>Rename this budget category.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-3 py-2">
+            <div>
+              <label className="text-xs text-muted-foreground">Category Name</label>
+              <Input value={catName} onChange={e => setCatName(e.target.value)} />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCatEditModalOpen(false)}>Cancel</Button>
+            <Button onClick={handleEditCategory} disabled={catSubmitting} className="gold-gradient text-neutral-900 font-semibold">
+              {catSubmitting ? 'Saving…' : 'Save Changes'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
@@ -2958,12 +3209,13 @@ const App = () => {
     }
   }, [user])
 
+  const isAdmin = user?.role === 'super_admin' || user?.role === 'admin_officer' || user?.role === 'admin' || user?.isSuperAdmin
   const isSuperAdmin = user?.role === 'super_admin' || user?.isSuperAdmin
   const navItems = useMemo(() => {
-    return isSuperAdmin
-      ? [...NAV, { id: 'email', label: 'Email Center', icon: Send }, { id: 'admin', label: 'Super Admin', icon: Crown }]
+    return isAdmin
+      ? [...NAV, ...(isSuperAdmin ? [{ id: 'email', label: 'Email Center', icon: Send }] : []), { id: 'admin', label: isSuperAdmin ? 'Super Admin' : 'Admin Panel', icon: Crown }]
       : NAV
-  }, [isSuperAdmin])
+  }, [isAdmin, isSuperAdmin])
 
   if (!booted) {
     return <div className="min-h-screen dark-panel text-neutral-100 grid place-items-center"><div className="text-amber-400">Loading…</div></div>
@@ -3088,7 +3340,7 @@ const App = () => {
             {nav === 'ledger' && <LedgerView user={user} />}
             {nav === 'reports' && <ReportsView user={user} />}
             {nav === 'email' && isSuperAdmin && <EmailCenter user={user} refresh={refresh} triggerRefresh={triggerRefresh} />}
-            {nav === 'admin' && isSuperAdmin && <AdminPanel user={user} refresh={refresh} triggerRefresh={triggerRefresh} />}
+            {nav === 'admin' && isAdmin && <AdminPanel user={user} refresh={refresh} triggerRefresh={triggerRefresh} />}
             {nav === 'audit' && <AuditView user={user} refresh={refresh} />}
           </main>
         </div>

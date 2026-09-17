@@ -536,6 +536,22 @@ async function scheduleTick(db) {
   }
 }
 
+async function ensureBudgetCategoriesSeeded(db) {
+  const count = await db.collection('budget_categories').countDocuments()
+  if (count === 0) {
+    const defaultCategories = [
+      { id: uuidv4(), name: 'Annual', slug: 'annual', createdAt: new Date().toISOString() },
+      { id: uuidv4(), name: 'Marketing', slug: 'marketing', createdAt: new Date().toISOString() },
+      { id: uuidv4(), name: 'Operational', slug: 'operational', createdAt: new Date().toISOString() },
+      { id: uuidv4(), name: 'Capital Expenditure', slug: 'capex', createdAt: new Date().toISOString() },
+      { id: uuidv4(), name: 'Project', slug: 'project', createdAt: new Date().toISOString() },
+      { id: uuidv4(), name: 'Partner Capital', slug: 'partner_capital', createdAt: new Date().toISOString() },
+      { id: uuidv4(), name: 'Loan', slug: 'loan', createdAt: new Date().toISOString() },
+    ]
+    await db.collection('budget_categories').insertMany(defaultCategories)
+  }
+}
+
 async function seedIfEmpty(db) {
   const c = await db.collection('_meta').findOne({ id: 'seed_v1' })
   if (c) return
@@ -633,6 +649,7 @@ async function seedIfEmpty(db) {
 async function handle(req, ctx) {
   const db = await getDb()
   await seedIfEmpty(db)
+  await ensureBudgetCategoriesSeeded(db)
   // Fire-and-forget daily email scheduler check
   scheduleTick(db).catch(() => {})
 
@@ -1113,9 +1130,80 @@ async function handle(req, ctx) {
       return ok(st)
     }
 
+    // === Budget Categories ===
+    if (path === 'budget-categories' && method === 'GET') {
+      const cats = await db.collection('budget_categories').find({}, { projection: { _id: 0 } }).sort({ createdAt: 1 }).toArray()
+      return ok(cats)
+    }
+    if (path === 'budget-categories' && method === 'POST') {
+      if (!['super_admin', 'admin_officer', 'admin'].includes(user.role)) {
+        return err('Forbidden: Only Admin/Super Admin can manage budget categories', 403)
+      }
+      const body = await req.json().catch(() => ({}))
+      const name = (body.name || '').trim()
+      if (!name) return err('Category name is required', 400)
+
+      const slug = (body.slug || name.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '') || ('category_' + Date.now()))
+
+      const existing = await db.collection('budget_categories').findOne({
+        $or: [
+          { slug },
+          { name: { $regex: new RegExp(`^${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') } }
+        ]
+      })
+      if (existing) {
+        return err('A budget category with this name or key already exists', 400)
+      }
+
+      const doc = {
+        id: uuidv4(),
+        name,
+        slug,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }
+      await db.collection('budget_categories').insertOne(doc)
+      delete doc._id
+      await audit(db, 'CREATE', 'budget_category', doc.id, null, doc, user, `Budget category '${name}' created`)
+      return ok(doc)
+    }
+
+    const bCatEdit = path.match(/^budget-categories\/([^/]+)$/)
+    if (bCatEdit && (method === 'PATCH' || method === 'PUT')) {
+      if (!['super_admin', 'admin_officer', 'admin'].includes(user.role)) {
+        return err('Forbidden: Only Admin/Super Admin can manage budget categories', 403)
+      }
+      const id = bCatEdit[1]
+      const body = await req.json().catch(() => ({}))
+      const name = (body.name || '').trim()
+      if (!name) return err('Category name is required', 400)
+
+      const before = await db.collection('budget_categories').findOne({ id }, { projection: { _id: 0 } })
+      if (!before) return err('Budget category not found', 404)
+
+      const slug = body.slug ? body.slug.trim() : before.slug
+      const updateData = {
+        name,
+        slug,
+        updatedAt: new Date().toISOString()
+      }
+
+      await db.collection('budget_categories').updateOne({ id }, { $set: updateData })
+      const after = { ...before, ...updateData }
+      await audit(db, 'UPDATE', 'budget_category', id, before, after, user, `Budget category '${before.name}' updated to '${name}'`)
+      return ok(after)
+    }
+
     // === Budgets ===
     if (path === 'budgets' && method === 'GET') {
-      const b = await db.collection('budgets').find({}, { projection: { _id: 0 } }).sort({ createdAt: -1 }).toArray()
+      const url = new URL(req.url)
+      const query = {}
+      const monthFilter = url.searchParams.get('periodMonth') || url.searchParams.get('month')
+      const yearFilter = url.searchParams.get('periodYear') || url.searchParams.get('year')
+      if (monthFilter) query.periodMonth = { $regex: new RegExp(`^${monthFilter}$`, 'i') }
+      if (yearFilter) query.periodYear = Number(yearFilter) || yearFilter
+
+      const b = await db.collection('budgets').find(query, { projection: { _id: 0 } }).sort({ createdAt: -1 }).toArray()
       const partners = await getRequiredApprovers(db)
       return ok(b.map(x => annotateApprovalProgress(x, partners)))
     }
@@ -1124,12 +1212,30 @@ async function handle(req, ctx) {
         return err('Forbidden: Partners are not permitted to create budget entries', 403)
       }
       const body = await req.json()
+
+      const periodMonth = body.periodMonth || null
+      const periodYear = body.periodYear ? Number(body.periodYear) : (body.period ? (parseInt(body.period) || null) : new Date().getFullYear())
+      
+      let period = body.period
+      if (periodMonth && periodYear) {
+        period = `${periodMonth} ${periodYear}`
+      } else if (!period) {
+        period = String(new Date().getFullYear())
+      }
+
       const doc = {
         id: uuidv4(),
-        name: body.name, type: body.type || 'operational',
-        amount: Number(body.amount)||0, utilized: 0,
-        status: 'pending', period: body.period || String(new Date().getFullYear()),
-        createdBy: user.id, createdByName: user.name,
+        name: body.name,
+        type: body.type || 'operational',
+        priority: (body.priority || 'medium').toLowerCase(),
+        amount: Number(body.amount) || 0,
+        utilized: 0,
+        status: 'pending',
+        period,
+        periodMonth,
+        periodYear,
+        createdBy: user.id,
+        createdByName: user.name,
         createdAt: new Date().toISOString(),
       }
       await db.collection('budgets').insertOne(doc)
@@ -1594,7 +1700,7 @@ async function handle(req, ctx) {
       const collections = [
         'transactions', 'budgets', 'quotations', 'quotation_files',
         'vendors', 'audit_logs', 'sent_emails', 'email_settings',
-        '_meta', 'users',
+        '_meta', 'users', 'budget_categories',
       ]
       for (const c of collections) await db.collection(c).deleteMany({})
       // Recreate acting super admin so they can continue
@@ -1635,7 +1741,7 @@ async function handle(req, ctx) {
 
     // === Reset (dev helper) ===
     if (path === 'reset' && method === 'POST') {
-      const cols = ['users','budgets','vendors','transactions','quotations','quotation_files','audit_logs','_meta','sent_emails','email_settings']
+      const cols = ['users','budgets','vendors','transactions','quotations','quotation_files','audit_logs','_meta','sent_emails','email_settings','budget_categories']
       for (const c of cols) await db.collection(c).deleteMany({})
       await seedIfEmpty(db)
       return ok({ reset: true })
