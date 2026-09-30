@@ -579,7 +579,7 @@ async function seedIfEmpty(db) {
     const { hash, salt } = hashPassword('admin123')
     partners.push({
       id: uuidv4(),
-      name: 'System Admin', role: 'super_admin', email: 'admin@partnersync.io',
+      name: 'System Admin', role: 'super_admin', email: 'wheelspa.admin@gmail.com',
       capital: 0, share: 0,
       passwordHash: hash, passwordSalt: salt,
       active: true, isSuperAdmin: true,
@@ -817,34 +817,190 @@ async function handle(req, ctx) {
       return ok(after)
     }
 
-    // === Auth: forgot password (public) ===
+    // === Auth: forgot password — send OTP (public) ===
     if (path === 'auth/forgot-password' && method === 'POST') {
       const body = await req.json()
       const email = (body.email || '').trim().toLowerCase()
+      const genericMsg = 'If an account with that email exists, an OTP has been sent.'
       if (!email) return err('Email is required', 400)
       const rec = await db.collection('users').findOne({ email })
-      // Do NOT reveal whether the account exists — respond identically either way
-      if (!rec || rec.approvalStatus !== 'approved' || rec.active === false) {
-        return ok({ ok: true, message: 'If an account with that email exists, a reset link has been sent.' })
+      const isApproved = (rec?.approvalStatus || 'approved') === 'approved'
+      if (!rec || !isApproved || rec.active === false) {
+        return ok({ ok: true, message: genericMsg })
       }
-      const tempPassword = 'PS-' + crypto.randomBytes(4).toString('hex').toUpperCase()
-      const { hash, salt } = hashPassword(tempPassword)
-      await db.collection('users').updateOne({ id: rec.id }, { $set: { passwordHash: hash, passwordSalt: salt, passwordResetAt: new Date().toISOString() } })
-      const portalUrl = process.env.NEXT_PUBLIC_BASE_URL || 'https://partnersync.local'
+
+      // Check resend cooldown (60 seconds)
+      const lastSent = rec.resetOtp?.lastSentAt ? new Date(rec.resetOtp.lastSentAt).getTime() : 0
+      if (Date.now() - lastSent < 60 * 1000) {
+        return ok({ ok: true, message: genericMsg })
+      }
+
+      // Generate secure 6-digit numeric OTP
+      const otp = String(crypto.randomInt(100000, 1000000))
+      const otpHash = crypto.createHash('sha256').update(otp).digest('hex')
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString() // 10 minutes
+
+      const resetState = {
+        hash: otpHash,
+        expiresAt,
+        attempts: 0,
+        lastSentAt: new Date().toISOString(),
+        verified: false,
+        resetToken: null,
+        resetTokenExpiresAt: null,
+      }
+
+      await db.collection('users').updateOne(
+        { id: rec.id },
+        { $set: { resetOtp: resetState } }
+      )
+
       const html = transactionalHtml({
-        title: 'Your temporary password',
+        title: 'Your Password Reset OTP',
         greeting: `Hello ${rec.name.split(' ')[0]},`,
-        body: `You requested a password reset. Use the temporary password below to sign in — then change it from your profile.<br/><br/>
-          <div style="font-family:monospace;font-size:22px;font-weight:700;background:#faf6e6;border:1px solid #d4af37;padding:14px 20px;border-radius:8px;text-align:center;letter-spacing:2px">${tempPassword}</div><br/>
-          If you didn't request this, contact your Super Admin immediately — someone may have used your email address.`,
-        ctaText: 'Sign in', ctaUrl: portalUrl,
+        body: `You requested a password reset for your PartnerSync account.<br/><br/>
+          Use the 6-digit OTP code below to verify your request:<br/><br/>
+          <div style="font-family:monospace;font-size:28px;font-weight:700;background:#faf6e6;border:1px solid #d4af37;padding:14px 20px;border-radius:8px;text-align:center;letter-spacing:4px;color:#0f0f0f">${otp}</div><br/>
+          This code will expire in 10 minutes.<br/>
+          If you didn't request this, contact your Super Admin immediately.`,
       })
-      await sendTemplateEmail(db, rec.email, rec.name, 'PartnerSync · Password reset',
-        html, { kind: 'password_reset' }, { id: 'system', name: 'System', role: 'system' })
-      await audit(db, 'PASSWORD_RESET_REQUEST', 'user', rec.id, null,
+
+      await sendTemplateEmail(db, rec.email, rec.name, 'Your Password Reset OTP',
+        html, { kind: 'password_reset_otp' }, { id: 'system', name: 'System', role: 'system' })
+
+      await audit(db, 'PASSWORD_RESET_OTP_REQUESTED', 'user', rec.id, null,
         { at: new Date().toISOString() }, { id: rec.id, name: rec.name, role: rec.role || 'user' },
-        'Temporary password issued via email')
-      return ok({ ok: true, message: 'If an account with that email exists, a reset link has been sent.' })
+        'OTP generated and sent via email')
+
+      return ok({ ok: true, message: genericMsg })
+    }
+
+    // === Auth: verify OTP (public) ===
+    if (path === 'auth/verify-otp' && method === 'POST') {
+      const body = await req.json()
+      const email = (body.email || '').trim().toLowerCase()
+      const otp = (body.otp || '').trim()
+      if (!email || !otp) return err('Email and OTP are required', 400)
+
+      const rec = await db.collection('users').findOne({ email })
+      if (!rec || !rec.resetOtp) {
+        return err('Invalid or expired OTP request. Please request a new OTP.', 400)
+      }
+
+      const { resetOtp } = rec
+      if (resetOtp.attempts >= 5) {
+        return err('Maximum failed attempts reached (5). Please request a new OTP.', 400)
+      }
+
+      if (new Date(resetOtp.expiresAt).getTime() < Date.now()) {
+        return err('OTP has expired. Please request a new OTP.', 400)
+      }
+
+      const submittedHash = crypto.createHash('sha256').update(otp).digest('hex')
+      if (submittedHash !== resetOtp.hash) {
+        const nextAttempts = (resetOtp.attempts || 0) + 1
+        await db.collection('users').updateOne(
+          { id: rec.id },
+          { $set: { 'resetOtp.attempts': nextAttempts } }
+        )
+        if (nextAttempts >= 5) {
+          return err('Maximum failed attempts reached (5). Please request a new OTP.', 400)
+        }
+        return err('Invalid OTP code. Please try again.', 400)
+      }
+
+      // Successful verification -> generate one-time reset token
+      const resetToken = crypto.randomBytes(32).toString('hex')
+      const resetTokenExpiresAt = new Date(Date.now() + 15 * 60 * 1000).toISOString() // 15 minutes
+
+      await db.collection('users').updateOne(
+        { id: rec.id },
+        {
+          $set: {
+            'resetOtp.verified': true,
+            'resetOtp.verifiedAt': new Date().toISOString(),
+            'resetOtp.resetToken': resetToken,
+            'resetOtp.resetTokenExpiresAt': resetTokenExpiresAt,
+          }
+        }
+      )
+
+      return ok({ ok: true, resetToken })
+    }
+
+    // === Auth: reset password (public) ===
+    if (path === 'auth/reset-password' && method === 'POST') {
+      const body = await req.json()
+      const email = (body.email || '').trim().toLowerCase()
+      const resetToken = (body.resetToken || '').trim()
+      const newPassword = body.newPassword || ''
+
+      if (!email || !resetToken || !newPassword) {
+        return err('Email, reset token and new password are required', 400)
+      }
+      if (newPassword.length < 6) {
+        return err('Password must be at least 6 characters', 400)
+      }
+
+      const rec = await db.collection('users').findOne({ email })
+      if (!rec || !rec.resetOtp || !rec.resetOtp.verified || rec.resetOtp.resetToken !== resetToken) {
+        return err('Invalid or unauthorized reset session. Please request a new OTP.', 400)
+      }
+
+      if (new Date(rec.resetOtp.resetTokenExpiresAt).getTime() < Date.now()) {
+        return err('Reset session has expired. Please request a new OTP.', 400)
+      }
+
+      const { hash, salt } = hashPassword(newPassword)
+      await db.collection('users').updateOne(
+        { id: rec.id },
+        {
+          $set: { passwordHash: hash, passwordSalt: salt, passwordResetAt: new Date().toISOString() },
+          $unset: { resetOtp: '' },
+        }
+      )
+
+      await audit(db, 'PASSWORD_RESET_COMPLETED', 'user', rec.id, null,
+        { at: new Date().toISOString() }, { id: rec.id, name: rec.name, role: rec.role || 'user' },
+        'Password reset completed via OTP')
+
+      return ok({ ok: true, message: 'Password reset successfully. You can now sign in.' })
+    }
+
+    // === Auth: change password (authenticated) ===
+    if (path === 'auth/change-password' && method === 'POST') {
+      if (!user || !user.id || user.id === 'system') {
+        return err('Unauthorized — please log in first', 401)
+      }
+      const body = await req.json()
+      const currentPassword = body.currentPassword || ''
+      const newPassword = body.newPassword || ''
+
+      if (!currentPassword || !newPassword) {
+        return err('Current password and new password are required', 400)
+      }
+      if (newPassword.length < 6) {
+        return err('New password must be at least 6 characters', 400)
+      }
+
+      const rec = await db.collection('users').findOne({ id: user.id })
+      if (!rec) return err('User account not found', 404)
+
+      if (!verifyPassword(currentPassword, rec.passwordHash, rec.passwordSalt)) {
+        return err('Incorrect current password', 400)
+      }
+
+      const { hash, salt } = hashPassword(newPassword)
+      await db.collection('users').updateOne(
+        { id: rec.id },
+        { $set: { passwordHash: hash, passwordSalt: salt, passwordResetAt: new Date().toISOString() } }
+      )
+
+      await audit(db, 'USER_CHANGE_PASSWORD', 'user', rec.id, null,
+        { at: new Date().toISOString() }, { id: rec.id, name: rec.name, role: rec.role || 'user' },
+        'User changed password')
+
+      return ok({ ok: true, message: 'Password updated successfully.' })
     }
 
     // === Admin: invite partner ===
@@ -1716,7 +1872,7 @@ async function handle(req, ctx) {
         // Fallback: create fresh admin
         const { hash, salt } = hashPassword('admin123')
         await db.collection('users').insertOne({
-          id: uuidv4(), name: 'System Admin', email: 'admin@partnersync.io', role: 'super_admin',
+          id: uuidv4(), name: 'System Admin', email: 'wheelspa.admin@gmail.com', role: 'super_admin',
           capital: 0, share: 0, passwordHash: hash, passwordSalt: salt,
           active: true, isSuperAdmin: true,
           createdAt: new Date().toISOString(), lastLogin: null,

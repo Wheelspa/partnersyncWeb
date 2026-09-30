@@ -181,25 +181,162 @@ const ConsensusBar = ({ progress, compact: mini = false }) => {
 const userHasVoted = (progress, userId) =>
   progress?.partners?.some(p => p.userId === userId && p.decision !== 'pending')
 
+const ChangePasswordModal = ({ open, onOpenChange, user }) => {
+  const [currentPassword, setCurrentPassword] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
+  const [loading, setLoading] = useState(false)
+
+  const resetForm = () => {
+    setCurrentPassword('')
+    setNewPassword('')
+    setConfirmPassword('')
+  }
+
+  const handleClose = (v) => {
+    if (!v) resetForm()
+    onOpenChange(v)
+  }
+
+  const submit = async () => {
+    if (!currentPassword || !newPassword) return toast.error('Current password and new password required')
+    if (newPassword.length < 6) return toast.error('New password must be at least 6 characters')
+    if (newPassword !== confirmPassword) return toast.error('New passwords do not match')
+
+    setLoading(true)
+    try {
+      const res = await api('/auth/change-password', {
+        method: 'POST',
+        body: JSON.stringify({ currentPassword, newPassword }),
+      }, user)
+      toast.success(res.message || 'Password updated successfully')
+      handleClose(false)
+    } catch (e) {
+      toast.error(e.message)
+    } finally {
+      setLoading(false)
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={handleClose}>
+      <DialogContent className="max-w-md">
+        <DialogHeader>
+          <DialogTitle className="font-display flex items-center gap-2">
+            <KeyRound className="h-5 w-5" /> Change Password
+          </DialogTitle>
+          <DialogDescription>
+            Update your account password below.
+          </DialogDescription>
+        </DialogHeader>
+        <div className="space-y-3">
+          <div>
+            <label className="text-xs text-muted-foreground">Current Password</label>
+            <Input type="password" value={currentPassword} onChange={e => setCurrentPassword(e.target.value)} className="mt-1" placeholder="••••••••" />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">New Password</label>
+            <Input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} className="mt-1" placeholder="Minimum 6 characters" />
+          </div>
+          <div>
+            <label className="text-xs text-muted-foreground">Confirm New Password</label>
+            <Input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)} className="mt-1" placeholder="••••••••" />
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={() => handleClose(false)}>Cancel</Button>
+          <Button onClick={submit} disabled={loading} className="gold-gradient text-neutral-900 font-semibold">
+            {loading ? 'Updating…' : 'Update Password'}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
 const LoginScreen = ({ onLogin }) => {
   const [mode, setMode] = useState('signin')
   const [form, setForm] = useState({ name: '', email: '', password: '' })
   const [loading, setLoading] = useState(false)
   const [pendingSignup, setPendingSignup] = useState(null)
+  
+  // Forgot Password & OTP multi-step state
   const [forgotOpen, setForgotOpen] = useState(false)
+  const [forgotStep, setForgotStep] = useState('email') // 'email' | 'otp' | 'password' | 'success'
   const [forgotEmail, setForgotEmail] = useState('')
+  const [otp, setOtp] = useState('')
+  const [resetToken, setResetToken] = useState('')
+  const [newPassword, setNewPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [forgotLoading, setForgotLoading] = useState(false)
+  const [cooldown, setCooldown] = useState(0)
 
-  const sendForgot = async () => {
+  useEffect(() => {
+    if (cooldown <= 0) return
+    const timer = setInterval(() => setCooldown(c => c - 1), 1000)
+    return () => clearInterval(timer)
+  }, [cooldown])
+
+  const resetForgotState = () => {
+    setForgotStep('email')
+    setForgotEmail('')
+    setOtp('')
+    setResetToken('')
+    setNewPassword('')
+    setConfirmPassword('')
+    setForgotLoading(false)
+  }
+
+  const handleForgotOpenChange = (v) => {
+    setForgotOpen(v)
+    if (!v) resetForgotState()
+  }
+
+  const sendForgotOtp = async () => {
     if (!forgotEmail) return toast.error('Enter your email')
     setForgotLoading(true)
     try {
-      await fetch('/api/auth/forgot-password', {
+      const res = await fetch('/api/auth/forgot-password', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: forgotEmail }),
       })
-      toast.success('If an account with that email exists, a reset email has been sent.')
-      setForgotOpen(false); setForgotEmail('')
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Failed to send OTP')
+      toast.success('If an account with that email exists, an OTP has been sent.')
+      setForgotStep('otp')
+      setCooldown(60)
+    } catch (e) { toast.error(e.message) } finally { setForgotLoading(false) }
+  }
+
+  const verifyOtpCode = async () => {
+    if (!otp || otp.length < 6) return toast.error('Enter the 6-digit OTP code')
+    setForgotLoading(true)
+    try {
+      const res = await fetch('/api/auth/verify-otp', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: forgotEmail, otp }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'OTP verification failed')
+      setResetToken(data.resetToken)
+      toast.success('OTP verified. Set your new password.')
+      setForgotStep('password')
+    } catch (e) { toast.error(e.message) } finally { setForgotLoading(false) }
+  }
+
+  const submitNewPassword = async () => {
+    if (!newPassword || newPassword.length < 6) return toast.error('New password must be at least 6 characters')
+    if (newPassword !== confirmPassword) return toast.error('Passwords do not match')
+    setForgotLoading(true)
+    try {
+      const res = await fetch('/api/auth/reset-password', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: forgotEmail, resetToken, newPassword }),
+      })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.error || 'Password reset failed')
+      toast.success('Password reset successfully.')
+      setForgotStep('success')
     } catch (e) { toast.error(e.message) } finally { setForgotLoading(false) }
   }
 
@@ -356,22 +493,101 @@ const LoginScreen = ({ onLogin }) => {
         </div>
       </div>
 
-      <Dialog open={forgotOpen} onOpenChange={setForgotOpen}>
+      <Dialog open={forgotOpen} onOpenChange={handleForgotOpenChange}>
         <DialogContent className="max-w-md">
           <DialogHeader>
-            <DialogTitle className="font-display flex items-center gap-2"><KeyRound className="h-5 w-5" /> Reset password</DialogTitle>
-            <DialogDescription>Enter your email and we&apos;ll send a temporary password. Use it to sign in and then change your password.</DialogDescription>
+            <DialogTitle className="font-display flex items-center gap-2">
+              <KeyRound className="h-5 w-5" /> Reset password
+            </DialogTitle>
+            <DialogDescription>
+              {forgotStep === 'email' && "Enter your email and we'll send a 6-digit verification code."}
+              {forgotStep === 'otp' && `Enter the 6-digit OTP code sent to ${forgotEmail}.`}
+              {forgotStep === 'password' && "Create a new password for your account."}
+              {forgotStep === 'success' && "Your password has been reset successfully."}
+            </DialogDescription>
           </DialogHeader>
-          <div>
-            <label className="text-xs text-muted-foreground">Email</label>
-            <Input type="email" value={forgotEmail} onChange={e => setForgotEmail(e.target.value)}
-              placeholder="you@company.com" className="mt-1" autoFocus />
-          </div>
+
+          {forgotStep === 'email' && (
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-muted-foreground">Email</label>
+                <Input type="email" value={forgotEmail} onChange={e => setForgotEmail(e.target.value)}
+                  placeholder="you@company.com" className="mt-1" autoFocus />
+              </div>
+            </div>
+          )}
+
+          {forgotStep === 'otp' && (
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-muted-foreground">6-Digit OTP Code</label>
+                <Input type="text" maxLength={6} value={otp} onChange={e => setOtp(e.target.value.replace(/\D/g, ''))}
+                  placeholder="483920" className="mt-1 text-center font-mono text-lg tracking-widest" autoFocus />
+              </div>
+              <div className="flex items-center justify-between text-xs text-muted-foreground pt-1">
+                <span>Didn&apos;t receive code?</span>
+                <button
+                  type="button"
+                  disabled={cooldown > 0 || forgotLoading}
+                  onClick={sendForgotOtp}
+                  className="text-amber-400 hover:text-amber-300 disabled:opacity-50 disabled:cursor-not-allowed font-medium underline"
+                >
+                  {cooldown > 0 ? `Resend OTP in ${cooldown}s` : 'Resend OTP'}
+                </button>
+              </div>
+            </div>
+          )}
+
+          {forgotStep === 'password' && (
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs text-muted-foreground">New Password</label>
+                <Input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)}
+                  placeholder="Minimum 6 characters" className="mt-1" autoFocus />
+              </div>
+              <div>
+                <label className="text-xs text-muted-foreground">Confirm Password</label>
+                <Input type="password" value={confirmPassword} onChange={e => setConfirmPassword(e.target.value)}
+                  placeholder="••••••••" className="mt-1" />
+              </div>
+            </div>
+          )}
+
+          {forgotStep === 'success' && (
+            <div className="rounded-lg border border-emerald-500/20 bg-emerald-500/10 p-4 text-center text-sm text-emerald-300">
+              <Check className="h-8 w-8 text-emerald-400 mx-auto mb-2" />
+              Your password has been updated. You can now log in with your new password.
+            </div>
+          )}
+
           <DialogFooter>
-            <Button variant="outline" onClick={() => setForgotOpen(false)}>Cancel</Button>
-            <Button onClick={sendForgot} disabled={forgotLoading} className="gold-gradient text-neutral-900 font-semibold">
-              {forgotLoading ? 'Sending…' : 'Send reset email'}
-            </Button>
+            {forgotStep !== 'success' && (
+              <Button variant="outline" onClick={() => handleForgotOpenChange(false)}>Cancel</Button>
+            )}
+
+            {forgotStep === 'email' && (
+              <Button onClick={sendForgotOtp} disabled={forgotLoading} className="gold-gradient text-neutral-900 font-semibold">
+                {forgotLoading ? 'Sending…' : 'Send OTP'}
+              </Button>
+            )}
+
+            {forgotStep === 'otp' && (
+              <Button onClick={verifyOtpCode} disabled={forgotLoading} className="gold-gradient text-neutral-900 font-semibold">
+                {forgotLoading ? 'Verifying…' : 'Verify Code'}
+              </Button>
+            )}
+
+            {forgotStep === 'password' && (
+              <Button onClick={submitNewPassword} disabled={forgotLoading} className="gold-gradient text-neutral-900 font-semibold">
+                {forgotLoading ? 'Updating…' : 'Set New Password'}
+              </Button>
+            )}
+
+            {forgotStep === 'success' && (
+              <Button onClick={() => handleForgotOpenChange(false)} className="gold-gradient text-neutral-900 font-semibold w-full">
+                Back to Sign In
+              </Button>
+            )}
           </DialogFooter>
         </DialogContent>
       </Dialog>
@@ -3155,6 +3371,7 @@ const App = () => {
   const [notifOpen, setNotifOpen] = useState(false)
   const [notifs, setNotifs] = useState([])
   const [booted, setBooted] = useState(false)
+  const [changePwOpen, setChangePwOpen] = useState(false)
 
   const triggerRefresh = () => setRefresh(x => x + 1)
 
@@ -3230,6 +3447,7 @@ const App = () => {
   return (
     <div className="min-h-screen bg-background text-foreground">
       <Toaster position="top-right" richColors />
+      <ChangePasswordModal open={changePwOpen} onOpenChange={setChangePwOpen} user={user} />
       <div className="flex">
         <aside className="hidden lg:flex flex-col w-64 min-h-screen dark-panel text-neutral-100 sticky top-0 border-r border-white/5">
           <div className="p-5 border-b border-white/5">
@@ -3265,9 +3483,14 @@ const App = () => {
                 <div className="text-sm font-medium truncate">{user.name}</div>
                 <div className="text-[11px] text-neutral-400 truncate">{ROLES.find(r => r.id === user.role)?.name}</div>
               </div>
-              <Button variant="ghost" size="icon" className="text-neutral-400 hover:text-white hover:bg-white/10" onClick={handleLogout}>
-                <LogOut className="h-4 w-4" />
-              </Button>
+              <div className="flex items-center gap-0.5">
+                <Button variant="ghost" size="icon" title="Change Password" className="h-8 w-8 text-neutral-400 hover:text-white hover:bg-white/10" onClick={() => setChangePwOpen(true)}>
+                  <KeyRound className="h-4 w-4" />
+                </Button>
+                <Button variant="ghost" size="icon" title="Sign out" className="h-8 w-8 text-neutral-400 hover:text-white hover:bg-white/10" onClick={handleLogout}>
+                  <LogOut className="h-4 w-4" />
+                </Button>
+              </div>
             </div>
           </div>
         </aside>
@@ -3314,6 +3537,9 @@ const App = () => {
                     <div className="text-xs font-medium leading-tight">{user.name}</div>
                     <div className="text-[10px] text-muted-foreground leading-tight">{ROLES.find(r => r.id === user.role)?.name}</div>
                   </div>
+                  <Button variant="ghost" size="icon" title="Change Password" className="h-8 w-8 text-muted-foreground hover:text-foreground" onClick={() => setChangePwOpen(true)}>
+                    <KeyRound className="h-4 w-4" />
+                  </Button>
                   <div className="h-8 w-8 rounded-full gold-gradient grid place-items-center text-neutral-900 font-bold text-xs">{initials}</div>
                 </div>
               </div>
